@@ -36,7 +36,7 @@ const stepValue = computed(() => {
   if (props.widget.options?.step2 !== undefined) {
     return Number(props.widget.options.step2)
   }
-  // Otherwise, derive from precision
+  // Otherwise derive from precision
   if (precision.value !== undefined) {
     if (precision.value === 0) {
       return 1
