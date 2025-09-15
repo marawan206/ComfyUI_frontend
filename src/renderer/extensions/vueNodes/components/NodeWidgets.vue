@@ -30,6 +30,7 @@
         :widget="widget.simplified"
         :model-value="widget.value"
         :readonly="readonly"
+        :node-id="nodeInfo?.id != null ? String(nodeInfo.id) : ''"
         class="flex-1"
         @update:model-value="widget.updateHandler"
       />

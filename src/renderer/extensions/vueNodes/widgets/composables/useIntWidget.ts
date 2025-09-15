@@ -1,3 +1,4 @@
+import { useVueFeatureFlags } from '@/composables/useVueFeatureFlags'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import type { INumericWidget } from '@/lib/litegraph/src/types/widgets'
 import { transformInputSpecV2ToV1 } from '@/schemas/nodeDef/migration'
@@ -13,19 +14,13 @@ import { useSettingStore } from '@/stores/settingStore'
 
 function onValueChange(this: INumericWidget, v: number) {
   // For integers, always round to the nearest step
-  // step === 0 is invalid, assign 1 if options.step is 0
   const step = this.options.step2 || 1
 
   if (step === 1) {
-    // Simple case: round to nearest integer
     this.value = Math.round(v)
   } else {
-    // Round to nearest multiple of step
-    // First, determine if min value creates an offset
     const min = this.options.min ?? 0
     const offset = min % step
-
-    // Round to nearest step, accounting for offset
     this.value = Math.round((v - offset) / step) * step + offset
   }
 }
@@ -54,7 +49,6 @@ export const useIntWidget = () => {
           : 'number'
 
     const step = inputSpec.step ?? 1
-    /** Assertion {@link inputSpec.default} */
     const defaultValue = (inputSpec.default as number | undefined) ?? 0
     const widget = node.addWidget(
       widgetType,
@@ -71,24 +65,97 @@ export const useIntWidget = () => {
       }
     )
 
-    const controlAfterGenerate =
-      inputSpec.control_after_generate ??
-      /**
-       * Compatibility with legacy node convention. Int input with name
-       * 'seed' or 'noise_seed' get automatically added a control widget.
-       */
-      ['seed', 'noise_seed'].includes(inputSpec.name)
+    // Only enable when the option is present (match legacy semantics)
+    const controlAfterGenerate = inputSpec.control_after_generate !== undefined
 
     if (controlAfterGenerate) {
-      const seedControl = addValueControlWidget(
-        node,
-        widget,
-        'randomize',
-        undefined,
-        undefined,
-        transformInputSpecV2ToV1(inputSpec)
-      )
-      widget.linkedWidgets = [seedControl]
+      const { isVueNodesEnabled } = useVueFeatureFlags()
+      if (isVueNodesEnabled.value) {
+        const normalize = (
+          v:
+            | boolean
+            | 'randomize'
+            | 'fixed'
+            | 'increment'
+            | 'decrement'
+            | undefined
+        ): 'fixed' | 'increment' | 'decrement' | 'randomize' => {
+          if (v === true) return 'randomize'
+          if (v === false) return 'fixed'
+          return (v as any) ?? 'fixed'
+        }
+
+        const controlState: {
+          mode: 'fixed' | 'increment' | 'decrement' | 'randomize'
+        } = {
+          mode: normalize(inputSpec.control_after_generate)
+        }
+
+        // Expose getters/setters to Vue components via options (non-serialized)
+        ;(widget.options as any).getControlMode = () => controlState.mode
+        ;(widget.options as any).setControlMode = (
+          mode: 'fixed' | 'increment' | 'decrement' | 'randomize'
+        ) => {
+          controlState.mode = mode
+        }
+
+        const controlValueRunBefore = () =>
+          settingStore.get('Comfy.WidgetControlMode') === 'before'
+
+        const applyControl = () => {
+          const min = widget.options.min ?? 0
+          const max = Math.min(1125899906842624, widget.options.max ?? 1)
+          const safeMin = Math.max(-1125899906842624, min)
+          const step2 = widget.options.step2 || 1
+          const range = (max - safeMin) / step2
+
+          let newValue = Number(
+            (widget as unknown as INumericWidget).value ?? 0
+          )
+
+          switch (controlState.mode) {
+            case 'fixed':
+              break
+            case 'increment':
+              newValue = newValue + step2
+              break
+            case 'decrement':
+              newValue = newValue - step2
+              break
+            case 'randomize':
+              newValue = Math.floor(Math.random() * range) * step2 + safeMin
+              break
+          }
+
+          // Clamp
+          if (newValue < safeMin) newValue = safeMin
+          if (newValue > max) newValue = max
+          ;(widget as unknown as INumericWidget).value =
+            newValue as unknown as any
+          widget.callback?.(newValue)
+        }
+
+        let hasExecuted = false
+        widget.beforeQueued = () => {
+          if (controlValueRunBefore()) {
+            if (hasExecuted) applyControl()
+          }
+          hasExecuted = true
+        }
+        widget.afterQueued = () => {
+          if (!controlValueRunBefore()) applyControl()
+        }
+      } else {
+        const seedControl = addValueControlWidget(
+          node,
+          widget,
+          'randomize',
+          undefined,
+          undefined,
+          transformInputSpecV2ToV1(inputSpec)
+        )
+        ;(widget as any).linkedWidgets = [seedControl]
+      }
     }
 
     return widget
